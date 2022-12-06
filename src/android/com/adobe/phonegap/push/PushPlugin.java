@@ -14,10 +14,11 @@ import android.os.Build;
 import android.os.Bundle;
 import androidx.core.app.NotificationCompat;
 
-import android.util.JsonReader;
 import android.util.Log;
 
-import com.google.firebase.iid.FirebaseInstanceId;
+import com.google.android.gms.tasks.OnSuccessListener;
+import com.google.android.gms.tasks.Task;
+import com.google.firebase.installations.FirebaseInstallations;
 import com.google.firebase.messaging.FirebaseMessaging;
 
 import org.apache.cordova.CallbackContext;
@@ -29,7 +30,6 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.IOException;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -38,7 +38,6 @@ import java.util.List;
 
 import me.leolin.shortcutbadger.ShortcutBadger;
 
-import com.microsoft.windowsazure.messaging.Registration;
 import com.microsoft.windowsazure.messaging.notificationhubs.NotificationHub;
 
 
@@ -185,7 +184,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
 
                     Log.v(LOG_TAG, "execute: data=" + data.toString());
                     SharedPreferences sharedPref = getApplicationContext().getSharedPreferences(COM_ADOBE_PHONEGAP_PUSH, Context.MODE_PRIVATE);
-                    String token = null;
+                    Task<String> tokenTask = null;
                     String senderID = null;
 
                     String regId = null;
@@ -206,16 +205,16 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
 
                         Log.v(LOG_TAG, "execute: senderID=" + senderID);
 
-                        token = FirebaseInstanceId.getInstance().getToken();
+                          tokenTask = FirebaseMessaging.getInstance().getToken();
+                          tokenTask.addOnSuccessListener(new OnSuccessListener<String>() {
+                          String regId = null;
+                          String storedToken = null;
+                          @Override
+                          public void onSuccess(String token) {
+                            if (!"".equals(token)) {
+                              SharedPreferences.Editor editor = sharedPref.edit();
 
-                        if (token == null) {
-                            token = FirebaseInstanceId.getInstance().getToken(senderID,FCM);
-                        }
-
-                        if (!"".equals(token)) {
-                            SharedPreferences.Editor editor = sharedPref.edit();
-
-                            if (((regId=sharedPref.getString(AZURE_REG_ID, null)) == null)){
+                              if (((regId=sharedPref.getString(AZURE_REG_ID, null)) == null)){
                                 NotificationHub.start(getApplication(),notificationHubPath, connectionString);
 
                                 //if(tags!=null && tags!="") {
@@ -229,7 +228,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
                                 editor.putString(AZURE_REG_ID, regId);
                                 editor.putString(REGISTRATION_ID, token);
                                 editor.commit();
-                            } else if ((storedToken=sharedPref.getString(REGISTRATION_ID, "")) != token) {
+                              } else if ((storedToken=sharedPref.getString(REGISTRATION_ID, "")) != token) {
                                 //NotificationHub hub = new NotificationHub(notificationHubPath, connectionString, getApplicationContext());
                                 NotificationHub.start(getApplication(),notificationHubPath, connectionString);
 
@@ -243,27 +242,34 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
                                 editor.putString(AZURE_REG_ID, regId);
                                 editor.putString(REGISTRATION_ID, token);
                                 editor.commit();
-                            } else {
+                              } else {
                                 callbackContext.error("Empty registration ID received from Azure");
                                 return;
+                              }
+
+                              JSONObject json = new JSONObject();
+                              try {
+                                json.put(AZURE_REG_ID, regId);
+                                json.put(REGISTRATION_ID, token);
+                              } catch (JSONException e) {
+                                e.printStackTrace();
+                              }
+
+                              Log.v(LOG_TAG, "onRegistered: " + json.toString());
+
+                              PushPlugin.sendEvent( json );
+                            } else {
+                              callbackContext.error("Empty registration ID received from FCM");
+                              return;
                             }
+                          }
+                        });
 
-                            JSONObject json = new JSONObject();
-                            json.put(AZURE_REG_ID, regId);
-                            json.put(REGISTRATION_ID, token);
-
-                            Log.v(LOG_TAG, "onRegistered: " + json.toString());
-
-                            PushPlugin.sendEvent( json );
-                        } else {
-                            callbackContext.error("Empty registration ID received from FCM");
-                            return;
-                        }
+                        /*if (token == null) {
+                            token = FirebaseInstanceId.getInstance().getToken(senderID,FCM);
+                        }*/
                     } catch (JSONException e) {
                         Log.e(LOG_TAG, "execute: Got JSON Exception " + e.getMessage());
-                        callbackContext.error(e.getMessage());
-                    } catch (IOException e) {
-                        Log.e(LOG_TAG, "execute: Got IO Exception " + e.getMessage());
                         callbackContext.error(e.getMessage());
                     } catch (Exception e) {
                         Log.e(LOG_TAG, "execute: Got General Exception " + e.getMessage());
@@ -327,7 +333,10 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
                         editor.remove(REGISTRATION_ID);
                         editor.commit();
 
-                        FirebaseInstanceId.getInstance().deleteInstanceId();
+                       // FirebaseInstanceId.getInstance().deleteInstanceId();
+                        FirebaseMessaging.getInstance().deleteToken();
+                        FirebaseInstallations.getInstance().delete();
+
                         Log.v(LOG_TAG, "UNREGISTER");
 
                         // Remove shared prefs
@@ -340,9 +349,6 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
                         editor.commit();
 
                         callbackContext.success();
-                    } catch (IOException e) {
-                        Log.e(LOG_TAG, "execute: Got JSON Exception " + e.getMessage());
-                        callbackContext.error(e.getMessage());
                     } catch (Exception e) {
                         Log.e(LOG_TAG, "execute: Got General Exception " + e.getMessage());
                         callbackContext.error(e.getMessage());
@@ -361,7 +367,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
                         notificationHubPath = data.getJSONObject(0).getString(NOTIFICATION_HUB_PATH);
                         connectionString = data.getJSONObject(0).getString(CONNECTION_STRING);
                         tagsJSON = data.getJSONObject(0).getJSONArray(TAGS);
-                        
+
 
                         if (tagsJSON != null) {
                           int len = tagsJSON.length();
@@ -370,13 +376,13 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
                           }
                         }
 
-                        String token = FirebaseInstanceId.getInstance().getToken();
-
-                        String senderID = getStringResourceByName(GCM_DEFAULT_SENDER_ID);
-
+                        // String token = FirebaseMessaging.getInstance().getToken().getResult();
+                        // String senderID = getStringResourceByName(GCM_DEFAULT_SENDER_ID);
+                        /*
                         if (token == null) {
                           token = FirebaseInstanceId.getInstance().getToken(senderID,FCM);
                         }
+                        */
 
                         //NotificationHub hub = new NotificationHub(notificationHubPath, connectionString, getApplicationContext());
                         //hub.register(token,tags);
@@ -389,10 +395,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
                             Log.v(LOG_TAG, "ADDTAGS failed");
                             callbackContext.error("removeTag failed with response 'false'");
                         }
-                    } catch (IOException e) {
-                        Log.e(LOG_TAG, "execute: Got JSON Exception " + e.getMessage());
-                        callbackContext.error(e.getMessage());
-                    } catch (Exception e) {
+                    }  catch (Exception e) {
                         Log.e(LOG_TAG, "execute: Got General Exception " + e.getMessage());
                         callbackContext.error(e.getMessage());
                     }
@@ -409,13 +412,15 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
                         connectionString = data.getJSONObject(0).getString(CONNECTION_STRING);
                         tag = data.getJSONObject(0).getString(TAG);
 
-                        String token = FirebaseInstanceId.getInstance().getToken();
+                        // String token = FirebaseMessaging.getInstance().getToken().getResult();
 
-                        String senderID = getStringResourceByName(GCM_DEFAULT_SENDER_ID);
+                        // String senderID = getStringResourceByName(GCM_DEFAULT_SENDER_ID);
 
-                        if (token == null) {
-                          token = FirebaseInstanceId.getInstance().getToken(senderID,FCM);
-                        }
+                        /*
+                           if (token == null) {
+                             token = FirebaseInstanceId.getInstance().getToken(senderID,FCM);
+                           }
+                        */
 
                         //NotificationHub hub = new NotificationHub(notificationHubPath, connectionString, getApplicationContext());
                         NotificationHub.start(getApplication(),notificationHubPath, connectionString);
@@ -426,9 +431,6 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
                             Log.v(LOG_TAG, "REMOVETAG failed");
                             callbackContext.error("removeTag failed with response 'false'");
                         }
-                    } catch (IOException e) {
-                        Log.e(LOG_TAG, "execute: Got JSON Exception " + e.getMessage());
-                        callbackContext.error(e.getMessage());
                     } catch (Exception e) {
                         Log.e(LOG_TAG, "execute: Got General Exception " + e.getMessage());
                         callbackContext.error(e.getMessage());
@@ -447,7 +449,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
                         notificationHubPath = data.getJSONObject(0).getString(NOTIFICATION_HUB_PATH);
                         connectionString = data.getJSONObject(0).getString(CONNECTION_STRING);
                         tagsJSON = data.getJSONObject(0).getJSONArray(TAGS);
-                        
+
 
                         if (tagsJSON != null) {
                           int len = tagsJSON.length();
@@ -456,16 +458,16 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
                           }
                         }
 
-                        String token = FirebaseInstanceId.getInstance().getToken();
+                        // String token = FirebaseMessaging.getInstance().getToken().getResult();
 
-                        String senderID = getStringResourceByName(GCM_DEFAULT_SENDER_ID);
+                        // String senderID = getStringResourceByName(GCM_DEFAULT_SENDER_ID);
 
-                        if (token == null) {
+                        /*if (token == null) {
                           token = FirebaseInstanceId.getInstance().getToken(senderID,FCM);
-                        }
+                        }*/
 
-                        //NotificationHub hub = new NotificationHub(notificationHubPath, connectionString, getApplicationContext());
-                        //hub.register(token,tags);
+                        // NotificationHub hub = new NotificationHub(notificationHubPath, connectionString, getApplicationContext());
+                        // hub.register(token,tags);
 
                         NotificationHub.start(getApplication(),notificationHubPath, connectionString);
                         if (NotificationHub.removeTags(tags)) {
@@ -475,9 +477,6 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
                             Log.v(LOG_TAG, "REMOVETAGS failed");
                             callbackContext.error("removeTags failed with response 'false'");
                         }
-                    } catch (IOException e) {
-                        Log.e(LOG_TAG, "execute: Got JSON Exception " + e.getMessage());
-                        callbackContext.error(e.getMessage());
                     } catch (Exception e) {
                         Log.e(LOG_TAG, "execute: Got General Exception " + e.getMessage());
                         callbackContext.error(e.getMessage());
@@ -488,19 +487,19 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
             cordova.getThreadPool().execute(new Runnable() {
                 public void run() {
                     try {
-                        //pushContext = callbackContext;
+                        // pushContext = callbackContext;
                         SharedPreferences sharedPref = getApplicationContext().getSharedPreferences(COM_ADOBE_PHONEGAP_PUSH, Context.MODE_PRIVATE);
 
                         notificationHubPath = data.getJSONObject(0).getString(NOTIFICATION_HUB_PATH);
                         connectionString = data.getJSONObject(0).getString(CONNECTION_STRING);
 
-                        String token = FirebaseInstanceId.getInstance().getToken();
+                        // String token = FirebaseMessaging.getInstance().getToken().getResult();
 
-                        String senderID = getStringResourceByName(GCM_DEFAULT_SENDER_ID);
+                        // String senderID = getStringResourceByName(GCM_DEFAULT_SENDER_ID);
 
-                        if (token == null) {
+                        /*if (token == null) {
                           token = FirebaseInstanceId.getInstance().getToken(senderID,FCM);
-                        }
+                        }*/
 
                         //NotificationHub hub = new NotificationHub(notificationHubPath, connectionString, getApplicationContext());
                         NotificationHub.start(getApplication(),notificationHubPath, connectionString);
@@ -519,10 +518,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
 
                         //PushPlugin.sendEvent( json );
                         callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, json));
-                    } catch (IOException e) {
-                        Log.e(LOG_TAG, "execute: Got JSON Exception " + e.getMessage());
-                        callbackContext.error(e.getMessage());
-                    } catch (Exception e) {
+                    }  catch (Exception e) {
                         Log.e(LOG_TAG, "execute: Got General Exception " + e.getMessage());
                         callbackContext.error(e.getMessage());
                     }
